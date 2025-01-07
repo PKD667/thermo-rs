@@ -1,0 +1,7 @@
+/home/pkd/code/rust/thermo/target/debug/build/raylib-sys-2f5cd1e95ce9b6c5/out/lib/libraylib.a
+/home/pkd/code/rust/thermo/target/debug/build/raylib-sys-2f5cd1e95ce9b6c5/out/include/raylib.h
+/home/pkd/code/rust/thermo/target/debug/build/raylib-sys-2f5cd1e95ce9b6c5/out/include/rlgl.h
+/home/pkd/code/rust/thermo/target/debug/build/raylib-sys-2f5cd1e95ce9b6c5/out/include/raymath.h
+/home/pkd/code/rust/thermo/target/debug/build/raylib-sys-2f5cd1e95ce9b6c5/out/lib/pkgconfig/raylib.pc
+/home/pkd/code/rust/thermo/target/debug/build/raylib-sys-2f5cd1e95ce9b6c5/out/lib/cmake/raylib/raylib-config-version.cmake
+/home/pkd/code/rust/thermo/target/debug/build/raylib-sys-2f5cd1e95ce9b6c5/out/lib/cmake/raylib/raylib-config.cmake
