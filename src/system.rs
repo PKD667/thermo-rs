@@ -1,136 +1,87 @@
 use std::cell;
 
-use crate::math::v2d;
+use crate::grid::CellGrid;
+use crate::linear::v2d;
 use crate::particle::Particle;
+use crate::shapes::Shape;
 
 use crate::measure::Measurer;
 
-use crate::tools::Modifier;
-
 use rayon::prelude::*;
-
-
-
-
-
-struct CellGrid {
-    pub height: i64,
-    pub width: i64,
-    
-    pub csize: i32,
-    pub cells: Vec<Vec<i32>>,
-
-    // stuff cached for optimization
-    pub cx: i32,
-    pub cy: i32,
-}
-
-impl CellGrid {
-
-    pub fn set_cells(&mut self, particles: &Vec<Particle>) {
-        for i in 0..self.cells.len() {
-            self.cells[i].clear();
-        }
-
-        for i in 0..particles.len() {
-            let cell = self.get_cell(particles[i].pos.clone());
-            self.cells[cell as usize].push(i as i32);
-        }
-
-    }
-
-    pub fn new (height: i64, width: i64, csize: i32,particles: &Vec<Particle>) -> CellGrid {
-        let cx = ((width as i32 / csize) + 1) as i32;
-        let cy = ((height as i32 / csize) + 1) as i32;
-
-        let mut cells = Vec::new();
-        for _ in 0..cx * cy {
-            cells.push(Vec::new());
-        }
-
-        let mut grid = CellGrid {
-            height: height,
-            width: width,
-            csize: csize,
-            cells: cells,
-            cx: cx,
-            cy: cy
-        };
-
-        grid.set_cells(particles);
-
-        grid
-    }
-
-    pub fn cidx(&self,(x, y): (i32, i32)) -> i32 {
-        // get a cell based on a matrix style index
-        x + y * self.cx
-    }
-
-    pub fn ccol(&self, idx: i32) -> i32 {
-        // get the column of a cell based on its index
-        idx % self.cx
-    }
-
-    pub fn crow(&self, idx: i32) -> i32 {
-        // get the row of a cell based on its index
-        idx / self.cx
-    }
-
-
-
-    pub fn get_cell(&self, pos: v2d) -> i32 {
-
-        let x = ((pos.x as i32) / self.csize) as i32;
-        let y = ((pos.y as i32) / self.csize) as i32;
-
-        x + (y * self.cx) as i32
-    }
-
-}
-
-
-
 
 pub struct System {
     pub particles: Vec<Particle>,
+    pub shapes: Vec<Shape>,
     pub height: f64,
     pub width: f64,
-    csize: i32,
-    
+
+    // utilies optimisation
+    cell_grid: CellGrid,
+    cell_collisions: Vec<(usize, usize)>,
+
     // measurer
     pub measurer: Measurer,
-
-    // tools shit
-    pub modifier: Modifier
-
 }
 
-const DEFAULT_CSIZE: i32 = 5 ;
+const DEFAULT_CSIZE: i32 = 10;
+
+// First, let's define our custom error type
+#[derive(Debug)]
+pub enum ParticleError {
+    OutOfBounds,
+    // You can add more error types here as needed!
+}
+
 
 impl System {
-    pub fn new(height: f64, width: f64) -> System {
+    pub fn new(height: f64, width: f64, shapes: Vec<Shape>) -> System {
+        let csize = DEFAULT_CSIZE;
+        let cell_grid = CellGrid::new(height as i64, width as i64, csize, &Vec::new());
+        let cell_collisions = cell_grid.get_cell_collisions();
+
         System {
             particles: Vec::new(),
+            shapes: shapes,
             height: height,
             width: width,
-            csize: DEFAULT_CSIZE,
+
+            cell_grid: cell_grid,
+            cell_collisions: cell_collisions,
+
             measurer: Measurer::new(),
-            modifier: Modifier {Q:0.0,F: v2d::new(0.0,0.0)}
         }
     }
 
-    pub fn add(&mut self, particle: Particle) {
+    // Now let's modify the function to return a Result
+    pub fn add(&mut self, particle: Particle) -> Result<(), ParticleError> {
+        // check if the particle is inside the system
+        if particle.pos.x < 0.0 || particle.pos.x > self.width ||
+        particle.pos.y < 0.0 || particle.pos.y > self.height {
+            return Err(ParticleError::OutOfBounds);
+        }
+
         self.particles.push(particle);
+        Ok(())
+    }
+
+    pub fn add_shape(&mut self, shape: Shape) {
+        // check if (all) the shape is inside the system
+        // iterate over segments in
+
+        self.shapes.push(shape);
     }
 
     pub fn update(&mut self, dt: f64) {
 
+        // measure tools
         self.measurer.record_time(dt);
+
+        // set the cells for the particles
+        self.cell_grid.set_cells(&self.particles);
 
         self.wall_collide();
 
-        self.apply_general_force(self.modifier.F.clone());
+        self.shape_collide();
 
         self.collide();
 
@@ -140,23 +91,32 @@ impl System {
     }
 
     pub fn collide(&mut self) {
-
         let collisions = self.get_collisions();
+        // print the number of collisions
+
 
         for (i, j) in collisions {
-            let (v1, v2) = self.apply_collision_equation(&self.particles[i as usize], &self.particles[j as usize]);
-            self.particles[i as usize].vel = v1;
-            self.particles[j as usize].vel = v2;
+            let (p1, p2) = unsafe {
+                // Get mutable references to both particles at once
+                (
+                    &mut *(&mut self.particles[i as usize] as *mut _),
+                    &mut *(&mut self.particles[j as usize] as *mut _),
+                )
+            };
 
-            // push particles apart by a small amount
-            let n = self.particles[i as usize].pos.sub(&self.particles[j as usize].pos);
-            let n = n.div(n.norm());
-            let push = n.mul(0.001);
-            self.particles[i as usize].pos = self.particles[i as usize].pos.add(&push);
-            self.particles[j as usize].pos = self.particles[j as usize].pos.sub(&push);
+            // Calculate velocities
+            let (v1, v2) = self.apply_collision_equation(p1, p2);
 
+            // Calculate position adjustment in one go
+            let vd = p1.pos.sub(&p2.pos);
+            let delta = vd.mul((p1.radius + p2.radius - vd.norm() + 0.0001) / 2.0);
+
+            // Update everything at once
+            p1.vel = v1;
+            p2.vel = v2;
+            p1.pos = p1.pos.add(&delta);
+            p2.pos = p2.pos.add(&delta.mul(-1.0));
         }
-
     }
 
     pub fn apply_general_force(&mut self, force: v2d) {
@@ -164,7 +124,6 @@ impl System {
             particle.vel = particle.vel.add(&force);
         }
     }
-
 
     pub fn apply_collision_equation(&self, p1: &Particle, p2: &Particle) -> (v2d, v2d) {
         let m1 = p1.mass;
@@ -178,129 +137,93 @@ impl System {
         let v2n = n.mul(v2.dot(&n));
         let v2t = v2.sub(&v2n);
 
-        let v1f = v1n.mul((m1 - m2)/(m1 + m2)).add(&v2n.mul(2.0*m2/(m1 + m2)));
-        let v2f = v2n.mul((m2 - m1)/(m1 + m2)).add(&v1n.mul(2.0*m1/(m1 + m2)));
+        let v1f = v1n
+            .mul((m1 - m2) / (m1 + m2))
+            .add(&v2n.mul(2.0 * m2 / (m1 + m2)));
+        let v2f = v2n
+            .mul((m2 - m1) / (m1 + m2))
+            .add(&v1n.mul(2.0 * m1 / (m1 + m2)));
         let v1 = v1f.add(&v1t);
         let v2 = v2f.add(&v2t);
 
-        let loss = 0.01;
-
-        (v1.mul(1.0 - loss), v2.mul(1.0 - loss))
-
+        (v1, v2)
     }
 
     pub fn wall_collide(&mut self) {
+        // make particles bounce off walls
+
         for particle in self.particles.iter_mut() {
-            let mut collided = false;
-
-
-
-            let factor = self.modifier.Q / particle.mass;
-
-    
-            // Check collision on the x-axis
-            if particle.pos.x < particle.radius {
+            if particle.pos.x - particle.radius < 0.0 {
+                particle.vel.x = -particle.vel.x;
                 particle.pos.x = particle.radius;
-                particle.vel.x = -particle.vel.x * (particle.vel.x.abs() / (particle.vel.x.abs() + factor));
-                collided = true;
-            } else if particle.pos.x + particle.radius > self.width {
+            }
+            if particle.pos.x + particle.radius > self.width {
+                particle.vel.x = -particle.vel.x;
                 particle.pos.x = self.width - particle.radius;
-                particle.vel.x = -particle.vel.x * (particle.vel.x.abs() / (particle.vel.x.abs() + factor));
-                collided = true;
             }
-    
-            // Check collision on the y-axis
-            if particle.pos.y < particle.radius {
+            if particle.pos.y - particle.radius < 0.0 {
+                particle.vel.y = -particle.vel.y;
                 particle.pos.y = particle.radius;
-                particle.vel.y = -particle.vel.y * (particle.vel.y.abs() / (particle.vel.y.abs() + factor));
-                collided = true;
-            } else if particle.pos.y + particle.radius > self.height {
+            }
+            if particle.pos.y + particle.radius > self.height {
+                particle.vel.y = -particle.vel.y;
                 particle.pos.y = self.height - particle.radius;
-                particle.vel.y = -particle.vel.y * (particle.vel.y.abs() / (particle.vel.y.abs() + factor));
-                collided = true;
             }
-    
-            if collided {
-                self.measurer.record_wall_hit(&particle);
-                // Push particles apart by a small amount
-                let push = particle.vel.mul(0.01);
-                particle.pos = particle.pos.add(&push);
+        }
+    }
 
-                self.modifier.Q -= factor;
+    pub fn shape_collide(&mut self) {
+        for particle in self.particles.iter_mut() {
+            for shape in self.shapes.iter_mut() {
+                shape.collide(particle);
             }
-
-
         }
     }
 
 
-    // ...existing code...
+    // compute all particle to particle collisions
     pub fn get_collisions(&mut self) -> Vec<(i32, i32)> {
-
-        let grid = self.get_cells();
-
-        let mut cell_collisions = Vec::new();
-        for i in 0..grid.cells.len() {
-            let (x, y) = (grid.ccol(i as i32), grid.crow(i as i32));
-
-            for dx in -1..2 {
-                for dy in -1..2 {
-                    let nx = x + dx;
-                    let ny = y + dy;
-                    if nx >= 0 && nx < grid.cx && ny >= 0 && ny < grid.cy {
-                        let idx = grid.cidx((nx, ny));
-                        cell_collisions.push((i, idx as usize));
+        
+        let mut possible_collisions = Vec::new();
+        
+        for (ci, cj) in self.cell_collisions.iter() {
+            // appends all the possible combinations of particles in the two cells
+            // make sure that the particles are not the same
+            for i in self.cell_grid.cells[*ci].iter() {
+                for j in self.cell_grid.cells[*cj].iter() {
+                    if i < j {
+                        possible_collisions.push((*i, *j));
                     }
                 }
             }
-
         }
 
-        let mut all_collisions = Vec::new();
-        for (i, j) in cell_collisions {
-            let vec_a = &grid.cells[i];
-            let vec_b = &grid.cells[j];
-            let mut pair_collisions = vec_a
-                .iter()
-                .flat_map(|x| {
-                    vec_b
-                        .iter()
-                        .filter(move |y| x < y)
-                        .map(move |y| (*x, *y))
-                })
-                .collect();
-            all_collisions.append(&mut pair_collisions);
-        }
-        
 
-
-        // ...existing code...
-        let filtered_collisions = all_collisions
-            .par_iter()
-            .cloned()
+        // filter out the collisions that are actually happening
+        let collisions: Vec<(i32, i32)> = possible_collisions
+            .into_par_iter()
             .filter(|(i, j)| {
                 let p1 = &self.particles[*i as usize];
                 let p2 = &self.particles[*j as usize];
-                p1.dist(p2) < p1.radius + p2.radius
+                let distance = p1.pos.sub(&p2.pos).norm();
+                distance < p1.radius + p2.radius
             })
-            .collect::<Vec<(i32, i32)>>();
-        
-        filtered_collisions
-        // ...existing code...
+            .collect();
 
+        collisions
     }
 
-    // partition the particle list into cells
-    fn get_cells(&mut self) -> CellGrid {
 
-        CellGrid::new(
-            self.height as i64, 
-            self.width as i64, 
-            self.csize, 
-            &self.particles
-        )
+    // grid function (optimization)
+    pub fn new_grid(&mut self) {
+        self.cell_grid = CellGrid::new(
+            self.height as i64,
+            self.width as i64,
+            DEFAULT_CSIZE,
+            &self.particles,
+        );
+        self.cell_collisions = self.cell_grid.get_cell_collisions();
     }
-
 
 
 
