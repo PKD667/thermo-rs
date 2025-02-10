@@ -1,15 +1,14 @@
 use crate::particle;
 use crate::system;
 
+
 pub struct Measurer {
     time: f64,
 
-    wall_hits_energy: Vec<(f64, f64)>,
+    wall_hits_energy: Vec<(f64,f64)>,
 }
 
-pub fn ke(particle: &particle::Particle) -> f64 {
-    0.5 * particle.mass as f64 * particle.vel.norm() * particle.vel.norm()
-}
+
 
 impl Measurer {
     pub fn new() -> Measurer {
@@ -21,10 +20,7 @@ impl Measurer {
     }
 
     pub fn record_wall_hit(&mut self, particle: &particle::Particle) {
-        self.wall_hits_energy.push((
-            particle.mass as f64 * particle.vel.norm() * particle.vel.norm(),
-            self.get_time(),
-        ));
+        self.wall_hits_energy.push((particle.mass as f64 * particle.vel.norm() * particle.vel.norm(),self.get_time()));
     }
 
     pub fn record_time(&mut self, dt: f64) {
@@ -32,18 +28,19 @@ impl Measurer {
     }
 
     pub fn get_pressure(&self, system: &system::System) -> f64 {
+
         let sample = 10.0;
 
         // get all hits in the sample
         let mut hits = Vec::new();
         let mut oldest_hit = self.get_time();
         for i in 0..self.wall_hits_energy.len() {
-            if self.get_time() - self.wall_hits_energy[i].1 < sample {
+            if self.get_time() - self.wall_hits_energy[i].1 < sample  {
                 hits.push(self.wall_hits_energy[i].0);
                 if self.wall_hits_energy[i].1 < oldest_hit {
                     oldest_hit = self.wall_hits_energy[i].1;
                 }
-            }
+            } 
         }
 
         // get average
@@ -56,10 +53,11 @@ impl Measurer {
 
         // get pressure
         (sum / surface) / (self.get_time() - oldest_hit) as f64
+
     }
 
     pub fn get_kinetic_energy(&self, system: &system::System) -> f64 {
-        system.particles.iter().map(|p| ke(p)).sum()
+        system.particles.iter().map(|p| 0.5 * p.mass as f64 * p.vel.norm() * p.vel.norm()).sum()
     }
 
     pub fn get_temperature(&self, system: &system::System) -> f64 {
