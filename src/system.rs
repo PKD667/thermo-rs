@@ -1,26 +1,26 @@
 use std::cell;
 
 use crate::grid::CellGrid;
-use crate::linear::v2d;
 use crate::particle::Particle;
 use crate::shapes::Shape;
 
-use crate::measure::Measurer;
+use dlt::tensor::*;
+use dlt::dimension::*;
+use dlt::units::*;
+use dlt::dot;
 
-use rayon::prelude::*;
+//use rayon::prelude::*;
 
 pub struct System {
     pub particles: Vec<Particle>,
     pub shapes: Vec<Shape>,
-    pub height: f64,
-    pub width: f64,
+    pub height: Scalar<Length>,
+    pub width: Scalar<Length>,
 
     // utilies optimisation
     cell_grid: CellGrid,
     cell_collisions: Vec<(usize, usize)>,
 
-    // measurer
-    pub measurer: Measurer,
 }
 
 const DEFAULT_CSIZE: i32 = 10;
@@ -34,29 +34,28 @@ pub enum ParticleError {
 
 
 impl System {
-    pub fn new(height: f64, width: f64, shapes: Vec<Shape>) -> System {
+    pub fn new(height: Scalar<Length>, width: Scalar<Length>) -> System {
         let csize = DEFAULT_CSIZE;
-        let cell_grid = CellGrid::new(height as i64, width as i64, csize, &Vec::new());
+        let cell_grid = CellGrid::new(height.raw() as i64, width.raw() as i64, csize, &Vec::new());
         let cell_collisions = cell_grid.get_cell_collisions();
 
         System {
             particles: Vec::new(),
-            shapes: shapes,
+            shapes: Vec::new(),
             height: height,
             width: width,
 
             cell_grid: cell_grid,
             cell_collisions: cell_collisions,
 
-            measurer: Measurer::new(),
         }
     }
 
     // Now let's modify the function to return a Result
     pub fn add(&mut self, particle: Particle) -> Result<(), ParticleError> {
         // check if the particle is inside the system
-        if particle.pos.x < 0.0 || particle.pos.x > self.width ||
-        particle.pos.y < 0.0 || particle.pos.y > self.height {
+        if particle.pos.x() < Scalar::<Length>::zero() || particle.pos.x() > self.width ||
+        particle.pos.y() < Scalar::<Length>::zero() || particle.pos.y() > self.height {
             return Err(ParticleError::OutOfBounds);
         }
 
@@ -71,10 +70,7 @@ impl System {
         self.shapes.push(shape);
     }
 
-    pub fn update(&mut self, dt: f64) {
-
-        // measure tools
-        self.measurer.record_time(dt);
+    pub fn update(&mut self, dt: Scalar<Time>) {
 
         // set the cells for the particles
         self.cell_grid.set_cells(&self.particles);
@@ -96,55 +92,51 @@ impl System {
 
 
         for (i, j) in collisions {
-            let (p1, p2) = unsafe {
-                // Get mutable references to both particles at once
-                (
-                    &mut *(&mut self.particles[i as usize] as *mut _),
-                    &mut *(&mut self.particles[j as usize] as *mut _),
-                )
-            };
-
-            // Calculate velocities
-            let (v1, v2) = self.apply_collision_equation(p1, p2);
-
-            // Calculate position adjustment in one go
-            let vd = p1.pos.sub(&p2.pos);
-            let delta = vd.mul((p1.radius + p2.radius - vd.norm() + 0.0001) / 2.0);
-
-            // Update everything at once
-            p1.vel = v1;
-            p2.vel = v2;
-            p1.pos = p1.pos.add(&delta);
-            p2.pos = p2.pos.add(&delta.mul(-1.0));
+            let (v1, v2) = self.apply_collision_equation(&self.particles[i as usize], &self.particles[j as usize]);
+            self.particles[i as usize].vel = v1;
+            self.particles[j as usize].vel = v2;
         }
     }
 
-    pub fn apply_general_force(&mut self, force: v2d) {
-        for particle in self.particles.iter_mut() {
-            particle.vel = particle.vel.add(&force);
-        }
-    }
-
-    pub fn apply_collision_equation(&self, p1: &Particle, p2: &Particle) -> (v2d, v2d) {
+    pub fn apply_collision_equation(&self, p1: &Particle, p2: &Particle) -> (Vec2<Velocity>, Vec2<Velocity>) {
         let m1 = p1.mass;
         let m2 = p2.mass;
-        let n = p1.pos.sub(&p2.pos);
-        let n = n.div(n.norm());
-        let v1 = p1.vel.clone();
-        let v2 = p2.vel.clone();
-        let v1n = n.mul(v1.dot(&n));
-        let v1t = v1.sub(&v1n);
-        let v2n = n.mul(v2.dot(&n));
-        let v2t = v2.sub(&v2n);
 
-        let v1f = v1n
-            .mul((m1 - m2) / (m1 + m2))
-            .add(&v2n.mul(2.0 * m2 / (m1 + m2)));
-        let v2f = v2n
-            .mul((m2 - m1) / (m1 + m2))
-            .add(&v1n.mul(2.0 * m1 / (m1 + m2)));
-        let v1 = v1f.add(&v1t);
-        let v2 = v2f.add(&v2t);
+        let n = p1.pos - p2.pos;
+        let i_norm = n.norm().inv();
+        let n = n.scale(i_norm);
+
+        let v1 = p1.vel;
+        let v2 = p2.vel;
+
+        
+        let v1n = n.scale(dot!(v1, n));
+        let v1t = v1 - v1n;
+        let v2n = n.scale(dot!(v2, n));
+        let v2t = v2 - v2n;
+
+        let inv_ms = (m1 + m2).inv();
+
+        let v1f = 
+            v1n * (
+                (m1 - m2) 
+                    * inv_ms
+                ) + 
+                v2n * (
+                    (m2+m2) * inv_ms
+                );
+                
+        let v2f = 
+            v2n * (
+                (m2 - m1) 
+                    * inv_ms
+                ) + 
+                v1n * (
+                    (m1+m1) * inv_ms
+                );
+
+        let v1 = v1f + v1t;
+        let v2 = v2f + v2t;
 
         (v1, v2)
     }
@@ -153,21 +145,21 @@ impl System {
         // make particles bounce off walls
 
         for particle in self.particles.iter_mut() {
-            if particle.pos.x - particle.radius < 0.0 {
-                particle.vel.x = -particle.vel.x;
-                particle.pos.x = particle.radius;
+            if particle.pos.x() - particle.radius < Scalar::<Length>::zero() {
+                particle.vel.set_at(0, 0, -particle.vel.x());
+                particle.pos.set_at(0, 0, particle.radius);
             }
-            if particle.pos.x + particle.radius > self.width {
-                particle.vel.x = -particle.vel.x;
-                particle.pos.x = self.width - particle.radius;
+            if particle.pos.x() + particle.radius > self.width {
+                particle.vel.set_at(0, 0, -particle.vel.x());
+                particle.pos.set_at(0, 0, self.width - particle.radius);
             }
-            if particle.pos.y - particle.radius < 0.0 {
-                particle.vel.y = -particle.vel.y;
-                particle.pos.y = particle.radius;
+            if particle.pos.y() - particle.radius < Scalar::<Length>::zero() {
+                particle.vel.set_at(0, 1, -particle.vel.y());
+                particle.pos.set_at(0, 1, particle.radius);
             }
-            if particle.pos.y + particle.radius > self.height {
-                particle.vel.y = -particle.vel.y;
-                particle.pos.y = self.height - particle.radius;
+            if particle.pos.y() + particle.radius > self.height {
+                particle.vel.set_at(0, 1, -particle.vel.y());
+                particle.pos.set_at(0, 1, self.height - particle.radius);
             }
         }
     }
@@ -201,11 +193,11 @@ impl System {
 
         // filter out the collisions that are actually happening
         let collisions: Vec<(i32, i32)> = possible_collisions
-            .into_par_iter()
+            .into_iter()
             .filter(|(i, j)| {
                 let p1 = &self.particles[*i as usize];
                 let p2 = &self.particles[*j as usize];
-                let distance = p1.pos.sub(&p2.pos).norm();
+                let distance = (p1.pos - p2.pos).norm();
                 distance < p1.radius + p2.radius
             })
             .collect();
@@ -217,8 +209,8 @@ impl System {
     // grid function (optimization)
     pub fn new_grid(&mut self) {
         self.cell_grid = CellGrid::new(
-            self.height as i64,
-            self.width as i64,
+            self.height.raw() as i64,
+            self.width.raw() as i64,
             DEFAULT_CSIZE,
             &self.particles,
         );

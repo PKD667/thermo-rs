@@ -183,6 +183,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlt"
+version = "0.1.1"
+
+[[package]]
 name = "either"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -661,6 +665,7 @@ name = "thermo"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "dlt",
  "rand",
  "raylib",
  "rayon",
