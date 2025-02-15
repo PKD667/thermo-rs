@@ -1,7 +1,7 @@
 
 use dlt::tensor::*;
 use dlt::dimension::*;
-use dlt::units::*;
+use dlt::si::*;
 
 pub struct Particle {
     pub pos: Vec2<Length>,

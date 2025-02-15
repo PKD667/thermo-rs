@@ -4,10 +4,14 @@ use crate::grid::CellGrid;
 use crate::particle::Particle;
 use crate::shapes::Shape;
 
+use dlt::dim_inv;
+use dlt::dot;
 use dlt::tensor::*;
 use dlt::dimension::*;
 use dlt::units::*;
-use dlt::dot;
+use dlt::si::*;
+use dlt::assert_dimension;
+use dlt::dim_mul;
 
 //use rayon::prelude::*;
 
@@ -18,12 +22,11 @@ pub struct System {
     pub width: Scalar<Length>,
 
     // utilies optimisation
+    cell_num: i32,
     cell_grid: CellGrid,
     cell_collisions: Vec<(usize, usize)>,
 
 }
-
-const DEFAULT_CSIZE: i32 = 10;
 
 // First, let's define our custom error type
 #[derive(Debug)]
@@ -34,10 +37,12 @@ pub enum ParticleError {
 
 
 impl System {
-    pub fn new(height: Scalar<Length>, width: Scalar<Length>) -> System {
-        let csize = DEFAULT_CSIZE;
-        let cell_grid = CellGrid::new(height.raw() as i64, width.raw() as i64, csize, &Vec::new());
+    pub fn new(height: Scalar<Length>, width: Scalar<Length>, cnum: i32) -> System {
+        let cell_grid = CellGrid::new(height.raw(), width.raw(), cnum, &Vec::new());
         let cell_collisions = cell_grid.get_cell_collisions();
+
+        // print out the cell grid
+        println!("{:?}", cell_grid);
 
         System {
             particles: Vec::new(),
@@ -45,6 +50,7 @@ impl System {
             height: height,
             width: width,
 
+            cell_num: cnum,
             cell_grid: cell_grid,
             cell_collisions: cell_collisions,
 
@@ -115,6 +121,11 @@ impl System {
         let v2n = n.scale(dot!(v2, n));
         let v2t = v2 - v2n;
 
+        assert_dimension!(v1n, Velocity);
+        assert_dimension!(v1t, Velocity);
+        assert_dimension!(v2n, Velocity);
+        assert_dimension!(v2t, Velocity);
+
         let inv_ms = (m1 + m2).inv();
 
         let v1f = 
@@ -138,6 +149,9 @@ impl System {
         let v1 = v1f + v1t;
         let v2 = v2f + v2t;
 
+        assert_dimension!(v1, Velocity);
+        assert_dimension!(v2, Velocity);
+
         (v1, v2)
     }
 
@@ -154,12 +168,12 @@ impl System {
                 particle.pos.set_at(0, 0, self.width - particle.radius);
             }
             if particle.pos.y() - particle.radius < Scalar::<Length>::zero() {
-                particle.vel.set_at(0, 1, -particle.vel.y());
-                particle.pos.set_at(0, 1, particle.radius);
+                particle.vel.set_at(1, 0, -particle.vel.y());
+                particle.pos.set_at(1, 0, particle.radius);
             }
             if particle.pos.y() + particle.radius > self.height {
-                particle.vel.set_at(0, 1, -particle.vel.y());
-                particle.pos.set_at(0, 1, self.height - particle.radius);
+                particle.vel.set_at(1, 0, -particle.vel.y());
+                particle.pos.set_at(1, 0, self.height - particle.radius);
             }
         }
     }
@@ -209,12 +223,14 @@ impl System {
     // grid function (optimization)
     pub fn new_grid(&mut self) {
         self.cell_grid = CellGrid::new(
-            self.height.raw() as i64,
-            self.width.raw() as i64,
-            DEFAULT_CSIZE,
+            self.height.raw(),
+            self.width.raw(),
+            self.cell_num,
             &self.particles,
         );
         self.cell_collisions = self.cell_grid.get_cell_collisions();
+
+        println!("{:?}", self.cell_grid);
     }
 
 

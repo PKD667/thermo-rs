@@ -1,16 +1,12 @@
-use crate::linear::v2d;
 use crate::particle::Particle;
 
 pub struct CellGrid {
-    pub height: i64,
-    pub width: i64,
+    pub height: f32,
+    pub width: f32,
 
-    pub csize: i32,
+    cnum: i32,
+    csize: f32,
     pub cells: Vec<Vec<i32>>,
-
-    // stuff cached for optimization
-    pub cx: i32,
-    pub cy: i32,
 }
 
 impl CellGrid {
@@ -20,27 +16,23 @@ impl CellGrid {
         }
 
         for i in 0..particles.len() {
-            let cell = self.get_cell(particles[i].pos.clone());
+            let cell = self.get_cell(particles[i].pos.raw_tuple());
             self.cells[cell as usize].push(i as i32);
         }
     }
 
-    pub fn new(height: i64, width: i64, csize: i32, particles: &Vec<Particle>) -> CellGrid {
-        let cx = ((width as i32 / csize) + 1) as i32;
-        let cy = ((height as i32 / csize) + 1) as i32;
-
+    pub fn new(height: f32, width: f32, cnum: i32, particles: &Vec<Particle>) -> CellGrid {
         let mut cells = Vec::new();
-        for _ in 0..cx * cy {
+        for _ in 0..cnum*cnum {
             cells.push(Vec::new());
         }
 
         let mut grid = CellGrid {
             height: height,
             width: width,
-            csize: csize,
+            cnum: cnum,
+            csize: height / (cnum as f32),
             cells: cells,
-            cx: cx,
-            cy: cy,
         };
 
         grid.set_cells(particles);
@@ -49,7 +41,7 @@ impl CellGrid {
         // with the number of particles in each cell
         for i in 0..grid.cells.len() {
             print!("{} ", grid.cells[i].len());
-            if (i + 1) % grid.cx as usize == 0 {
+            if (i + 1) % grid.cnum as usize == 0 {
                 println!();
             }
         }
@@ -59,17 +51,17 @@ impl CellGrid {
 
     pub fn cidx(&self, (x, y): (i32, i32)) -> i32 {
         // get a cell based on a matrix style index
-        x + y * self.cx
+        x + y * self.cnum
     }
 
     pub fn ccol(&self, idx: i32) -> i32 {
         // get the column of a cell based on its index
-        idx % self.cx
+        idx % self.cnum
     }
 
     pub fn crow(&self, idx: i32) -> i32 {
         // get the row of a cell based on its index
-        idx / self.cx
+        idx / self.cnum
     }
 
     pub fn get_cell_collisions(&self) -> Vec<(usize, usize)> {
@@ -81,7 +73,7 @@ impl CellGrid {
                 for dy in -1..2 {
                     let nx = x + dx;
                     let ny = y + dy;
-                    if nx >= 0 && nx < self.cx && ny >= 0 && ny < self.cy {
+                    if nx >= 0 && nx < self.cnum && ny >= 0 && ny < self.cnum {
                         let idx = self.cidx((nx, ny));
                         cell_collisions.push((i, idx as usize));
                     }
@@ -91,10 +83,37 @@ impl CellGrid {
         cell_collisions
     }
 
-    pub fn get_cell(&self, pos: v2d) -> i32 {
-        let x = ((pos.x as i32) / self.csize) as i32;
-        let y = ((pos.y as i32) / self.csize) as i32;
+    pub fn get_cell(&self, pos: (f32, f32)) -> i32 {
+        let mut col = (pos.0 / self.csize).floor() as i32;
+        let mut row = (pos.1 / self.csize).floor() as i32;
+    
+        // Clamp the column and row to valid indices.
+        if col < 0 {
+            col = 0;
+        } else if col >= self.cnum {
+            col = self.cnum - 1;
+        }
+    
+        if row < 0 {
+            row = 0;
+        } else if row >= self.cnum {
+            row = self.cnum - 1;
+        }
+    
+        self.cidx((col, row))
+    }
+}
 
-        x + (y * self.cx) as i32
+// implement debug
+impl std::fmt::Debug for CellGrid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CellGrid: \n")?;
+        for i in 0..self.cells.len() {
+            write!(f, "{} ", self.cells[i].len())?;
+            if (i + 1) % self.cnum as usize == 0 {
+                write!(f, "\n")?;
+            }
+        }
+        Ok(())
     }
 }

@@ -1,87 +1,72 @@
-use thermo::math::v2d;
+#![feature(generic_const_exprs)]
+#![feature(trivial_bounds)]
+#![feature(generic_arg_infer)]
+
+use dlt::*;
 use thermo::particle::Particle;
 use thermo::system::System;
 use thermo::render::Renderer;
 
+use dlt::tensor::*;
+use dlt::dimension::*;
+use dlt::units::*;
+use dlt::si::*;
 
 // random number generator
 use rand::Rng;
 
-const WIDTH: f64 = 200.0;
-const HEIGHT: f64 = 100.0;
+fn main() {
+    let height = Scalar::<Length>::from::<Ångström>(1000.0);
+    let width = Scalar::<Length>::from::<Ångström>(1000.0);
 
-const N: i32 = 1000;
+    println!("Height: {} Ångström", height);
+    println!("Width: {} Ångström", width);
 
-pub fn gen_particles(system: &mut System, n: i32, speed_factor: f64, mass: f32, radius: f32) {
+    let mut system = System::new(height, width, 20);
+
+    // one particle
     let mut rng = rand::thread_rng();
 
-    let mut i = 0;
-    loop {
+    for _ in 0..500 {
+        let pos = Vec2::<Length>::new::<base_unit_dim!(Length)>(
+            [rng.gen_range(0.0..height.raw()), rng.gen_range(0.0..height.raw())]
+        );
+        let r = Scalar::<Length>::from::<Ångström>(rng.gen_range(1.0..10.0));
 
-        let vx = rng.gen_range(-1.0..1.0) * speed_factor;
-        let vy = rng.gen_range(-1.0..1.0) * speed_factor;
+        let vel = Vec2::<Velocity>::new::<unit_div!(Ångström,Second)>(
+            [rng.gen_range(-10.0..10.0), rng.gen_range(-100.0..100.0)]
+        );
+        let m = Scalar::<Mass>::from::<Dalton>(rng.gen_range(1.0..10.0));
 
-        let mass = mass as f64;
-        let radius = radius as f64;
-
-        let x = rng.gen_range(radius + 0.1..WIDTH - radius - 0.1);
-        let y = rng.gen_range(radius + 0.1..HEIGHT - radius - 0.1);
-
-        let p = Particle::new(v2d::new(x, y), v2d::new(vx, vy), mass, radius);
-
-
-        let mut good = true;
-        for p2 in system.particles.iter() {
-            if p.dist(p2) < p.radius + p2.radius + 0.1 {
-                good = false;
-                break;
-            }
-        }
-
-        if good {
-            system.add(p);
-            i += 1;
-        }
-
-        if i >= n {
-            break;
-        }
-
+        let p = Particle::new(pos, vel, m, r);
+        system.add(p).unwrap();
     }
 
+    let scale: STYPE = <base_unit_dim!(Length) as Unit>::ratio::<Ångström>();
+    println!("Scale: {}", scale);
+    let mut renderer = Renderer::new(scale, &system);
 
-}
+    let dt = Scalar::<Time>::from::<Millisecond>(1.0);
 
-fn main() {
-    let mut system = System::new(HEIGHT, WIDTH);
-
-    gen_particles(&mut system, N, 20.0, 1.0, 1.0);
-
-    let mut renderer = Renderer::new(4.0, &system);
-
-    let dt = 1.0 / 200.0;
     let mut i = 0;
-
     let start_time = std::time::Instant::now();
-
     let mut tps = 0.0;
 
-    let mut pressures: Vec<f64> = Vec::new();
-    let mut temperatures: Vec<f64> = Vec::new();
-    let mut kinetic_energies: Vec<f64> = Vec::new();
-
-    system.modifier.force(v2d::new(0.0,-0.0));
-
-
     while !renderer.rl.window_should_close() {
-
+        let update_start = std::time::Instant::now();
         system.update(dt);
+        let update_duration = update_start.elapsed();
+        //println!("system.update() took: {:?}", update_duration);
 
+        let render_start = std::time::Instant::now();
         renderer.render(&system);
+        let render_duration = render_start.elapsed();
+        //println!("renderer.render() took: {:?}", render_duration);
 
-    
-        if tps > (1.0/dt) {
-            std::thread::sleep(std::time::Duration::from_millis((dt * 1000.0) as u64));
+        if tps > (dt.inv().raw() as f64) {
+            //std::thread::sleep(std::time::Duration::from_millis(
+            //    dt.scale((1000.0).dless()).get_at::<Millisecond>(0,0) as u64)
+            //);
         }
 
         i += 1;
@@ -89,33 +74,6 @@ fn main() {
         tps = i as f64 / start_time.elapsed().as_secs_f64();
         if i % 100 == 0 {
             println!("TPS: {}", tps);
-
-            // print measurements
-            let p = system.measurer.get_pressure(&system);
-            let t = system.measurer.get_temperature(&system);
-            let k = system.measurer.get_kinetic_energy(&system);
-
-            println!("Pressure: {}", p);
-            println!("Temperature: {}", t);
-            println!("Kinetic Energy: {}", k);
-
-            pressures.push(p);
-            temperatures.push(t);
-            kinetic_energies.push(k);
-
-            
-            // save in a csv file
-            let mut wtr = csv::Writer::from_path("data.csv").unwrap();
-            for i in 0..pressures.len() {
-                wtr.write_record(&[pressures[i].to_string(), temperatures[i].to_string(), kinetic_energies[i].to_string()]).unwrap();
-            }
-            wtr.flush().unwrap();
-
-
-
-        
-            println!("Time: {}", system.measurer.get_time());
-
         }
     }
 }
