@@ -8,5 +8,6 @@ pub mod render;
 pub mod shapes;
 pub mod grid;
 pub mod segment;
+pub mod simulation;
 
 

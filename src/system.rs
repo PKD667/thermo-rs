@@ -8,25 +8,13 @@ use dlt::dim_inv;
 use dlt::dot;
 use dlt::tensor::*;
 use dlt::dimension::*;
+use dlt::unit_mul;
 use dlt::units::*;
 use dlt::si::*;
 use dlt::assert_dimension;
 use dlt::dim_mul;
 
 //use rayon::prelude::*;
-
-pub struct System {
-    pub particles: Vec<Particle>,
-    pub shapes: Vec<Shape>,
-    pub height: Scalar<Length>,
-    pub width: Scalar<Length>,
-
-    // utilies optimisation
-    cell_num: i32,
-    cell_grid: CellGrid,
-    cell_collisions: Vec<(usize, usize)>,
-
-}
 
 // First, let's define our custom error type
 #[derive(Debug)]
@@ -35,6 +23,38 @@ pub enum ParticleError {
     // You can add more error types here as needed!
 }
 
+pub struct System {
+    pub particles: Vec<Particle>,
+    pub shapes: Vec<Shape>,
+    pub height: Scalar<Length>,
+    pub width: Scalar<Length>,
+
+    // utilies optimisation
+    pub cell_num: i32,
+    cell_grid: CellGrid,
+    cell_collisions: Vec<(usize, usize)>,
+
+}
+
+use std::marker::PhantomData;
+
+const SPRING_COEFFICIENT: Scalar::<dim_mul!(
+    Mass, 
+    (dim_mul!(
+        (dim_inv!(Time)), 
+        (dim_inv!(Time)))
+    ))> = Scalar {
+        data: [1.0],
+        _phantom: PhantomData
+};
+
+const DAMPING_COEFFICIENT: Scalar::<dim_mul!(
+    Mass, 
+    (dim_inv!(Time))
+    )> = Scalar {
+        data: [1.0],
+        _phantom: PhantomData
+};
 
 impl System {
     pub fn new(height: Scalar<Length>, width: Scalar<Length>, cnum: i32) -> System {
@@ -66,6 +86,7 @@ impl System {
         }
 
         self.particles.push(particle);
+
         Ok(())
     }
 
@@ -80,79 +101,77 @@ impl System {
 
         // set the cells for the particles
         self.cell_grid.set_cells(&self.particles);
+        //println!("{:?}", self.cell_grid);
 
         self.wall_collide();
 
         self.shape_collide();
 
-        self.collide();
+        self.collide(dt);
 
         for particle in self.particles.iter_mut() {
             particle.update(dt);
         }
     }
 
-    pub fn collide(&mut self) {
+    pub fn collide(&mut self, dt: Scalar<Time>) {
         let collisions = self.get_collisions();
-        // print the number of collisions
-
 
         for (i, j) in collisions {
-            let (v1, v2) = self.apply_collision_equation(&self.particles[i as usize], &self.particles[j as usize]);
-            self.particles[i as usize].vel = v1;
-            self.particles[j as usize].vel = v2;
+            let (f1, f2) = self.compute_collision_force(&self.particles[i as usize], &self.particles[j as usize]);
+            
+            // debug forces
+            println!("f1 : {}, f2: {}", f1,f2);
+
+            self.particles[i as usize].apply(f1,dt);
+            self.particles[j as usize].apply(f2, dt);
         }
     }
 
-    pub fn apply_collision_equation(&self, p1: &Particle, p2: &Particle) -> (Vec2<Velocity>, Vec2<Velocity>) {
-        let m1 = p1.mass;
-        let m2 = p2.mass;
+    pub fn compute_collision_force(&self, p1: &Particle, p2: &Particle) -> (Vec2<Force>, Vec2<Force>) {
 
         let n = p1.pos - p2.pos;
-        let i_norm = n.norm().inv();
-        let n = n.scale(i_norm);
+        let distance = n.norm();
+        println!("distance: {}",distance);
+
+        if distance.raw().abs() < f32::EPSILON {
+            return (
+                Vec2::<Force>::zero(),
+                Vec2::<Force>::zero()
+            )
+        }
+
+        // Normalize collision direction vector
+        // TODO: integrate to `dlt`
+        let normal = n.scale(distance.inv());
+        println!("normal: {}", normal);
+
+        // compute particle overlap
+        let overlap = (p1.radius + p2.radius) - distance;
+        println!("overlap: {}",overlap);
 
         let v1 = p1.vel;
         let v2 = p2.vel;
 
+        let rvel = v2 - v1;
         
-        let v1n = n.scale(dot!(v1, n));
-        let v1t = v1 - v1n;
-        let v2n = n.scale(dot!(v2, n));
-        let v2t = v2 - v2n;
+        assert_dimension!(normal,Dimensionless);
+        assert_dimension!(overlap,Length);
+        assert_dimension!(rvel,Velocity);
 
-        assert_dimension!(v1n, Velocity);
-        assert_dimension!(v1t, Velocity);
-        assert_dimension!(v2n, Velocity);
-        assert_dimension!(v2t, Velocity);
+        let spring_force: Scalar<Force> = SPRING_COEFFICIENT * overlap;
+        println!("spring force: {}",spring_force);
+        let damping_force: Scalar<Force> = DAMPING_COEFFICIENT * dot!(rvel, normal);
+        println!("damping force: {}",spring_force);
 
-        let inv_ms = (m1 + m2).inv();
+        let force = spring_force + damping_force;
+        println!("force: {force}");
 
-        let v1f = 
-            v1n * (
-                (m1 - m2) 
-                    * inv_ms
-                ) + 
-                v2n * (
-                    (m2+m2) * inv_ms
-                );
-                
-        let v2f = 
-            v2n * (
-                (m2 - m1) 
-                    * inv_ms
-                ) + 
-                v1n * (
-                    (m1+m1) * inv_ms
-                );
 
-        let v1 = v1f + v1t;
-        let v2 = v2f + v2t;
+        let force2 = normal.scale(force);
+        let force1 = normal.scale(-force);
 
-        assert_dimension!(v1, Velocity);
-        assert_dimension!(v2, Velocity);
-
-        (v1, v2)
+        (force1, force2)
     }
 
     pub fn wall_collide(&mut self) {
@@ -232,8 +251,6 @@ impl System {
 
         println!("{:?}", self.cell_grid);
     }
-
-
 
     // reserved for future use
 }
