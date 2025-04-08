@@ -12,10 +12,10 @@ use crate::particle::Particle;
 use crate::physics::CollisionInfo;
 
 pub struct Segment {
-    pub p1: Vec2<Length>,
-    pub p2: Vec2<Length>,
+    pub p1: Vec2<f32,Length>,
+    pub p2: Vec2<f32,Length>,
 
-    pub normal: Vec2<Length>,
+    pub normal: Vec2<f32,Length>,
 }
 
 
@@ -36,7 +36,7 @@ impl Segment {
     
         // 2. Compute collision vector
         let collision_vector = particle.pos - closest_point;
-        let distance = collision_vector.norm();
+        let distance = collision_vector.norm().cast::<f32>();
     
         // 3. Check if the point is on the correct side of the normal
         let side = dot!(particle.pos - self.p1, self.normal);
@@ -46,10 +46,10 @@ impl Segment {
         let collision_velocity = dot!(particle.vel, collision_vector) * distance.inv();
         assert_dimension!(collision_velocity, Velocity);
     
-        if distance <= particle.radius && side >= Scalar::<Area>::zero() {
+        if distance <= particle.radius && side >= Scalar::<f32,Area>::zero() {
             Some(CollisionInfo {
                 ke: (particle.mass * collision_velocity * collision_velocity)
-                    .scale((0.5).dless()),
+                    .scale(dless!(0.5)),
                 normal: collision_vector,
         })
         } else {

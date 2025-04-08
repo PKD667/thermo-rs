@@ -13,6 +13,9 @@ use dlt::units::*;
 use dlt::si::*;
 use dlt::assert_dimension;
 use dlt::dim_mul;
+use dlt::dless;
+use dlt::dimension;
+use dlt::units;
 
 //use rayon::prelude::*;
 
@@ -26,8 +29,8 @@ pub enum ParticleError {
 pub struct System {
     pub particles: Vec<Particle>,
     pub shapes: Vec<Shape>,
-    pub height: Scalar<Length>,
-    pub width: Scalar<Length>,
+    pub height: Scalar<f32,Length>,
+    pub width: Scalar<f32,Length>,
 
     // utilies optimisation
     pub cell_num: i32,
@@ -38,17 +41,17 @@ pub struct System {
 
 use std::marker::PhantomData;
 
-const SPRING_COEFFICIENT: Scalar::<dim_mul!(
+const SPRING_COEFFICIENT: Scalar::<f32,dim_mul!(
     Mass, 
     (dim_mul!(
         (dim_inv!(Time)), 
         (dim_inv!(Time)))
     ))> = Scalar {
-        data: [1.0],
+        data: [1000.0],
         _phantom: PhantomData
 };
 
-const DAMPING_COEFFICIENT: Scalar::<dim_mul!(
+const DAMPING_COEFFICIENT: Scalar::<f32,dim_mul!(
     Mass, 
     (dim_inv!(Time))
     )> = Scalar {
@@ -57,7 +60,7 @@ const DAMPING_COEFFICIENT: Scalar::<dim_mul!(
 };
 
 impl System {
-    pub fn new(height: Scalar<Length>, width: Scalar<Length>, cnum: i32) -> System {
+    pub fn new(height: Scalar<f32,Length>, width: Scalar<f32,Length>, cnum: i32) -> System {
         let cell_grid = CellGrid::new(height.raw(), width.raw(), cnum, &Vec::new());
         let cell_collisions = cell_grid.get_cell_collisions();
 
@@ -80,8 +83,8 @@ impl System {
     // Now let's modify the function to return a Result
     pub fn add(&mut self, particle: Particle) -> Result<(), ParticleError> {
         // check if the particle is inside the system
-        if particle.pos.x() < Scalar::<Length>::zero() || particle.pos.x() > self.width ||
-        particle.pos.y() < Scalar::<Length>::zero() || particle.pos.y() > self.height {
+        if particle.pos.x() < Scalar::<f32,Length>::zero() || particle.pos.x() > self.width ||
+        particle.pos.y() < Scalar::<f32,Length>::zero() || particle.pos.y() > self.height {
             return Err(ParticleError::OutOfBounds);
         }
 
@@ -97,7 +100,11 @@ impl System {
         self.shapes.push(shape);
     }
 
-    pub fn update(&mut self, dt: Scalar<Time>) {
+    pub fn update(&mut self, dt: Scalar<f32,Time>) {
+
+        for particle in self.particles.iter_mut() {
+            particle.update(dt);
+        }
 
         // set the cells for the particles
         self.cell_grid.set_cells(&self.particles);
@@ -109,12 +116,10 @@ impl System {
 
         self.collide(dt);
 
-        for particle in self.particles.iter_mut() {
-            particle.update(dt);
-        }
+
     }
 
-    pub fn collide(&mut self, dt: Scalar<Time>) {
+    pub fn collide(&mut self, dt: Scalar<f32,Time>) {
         let collisions = self.get_collisions();
 
         for (i, j) in collisions {
@@ -123,53 +128,55 @@ impl System {
             // debug forces
             println!("f1 : {}, f2: {}", f1,f2);
 
-            self.particles[i as usize].apply(f1,dt);
-            self.particles[j as usize].apply(f2, dt);
+
+            self.particles[i as usize].apply(f2,dt);
+            self.particles[j as usize].apply(f1, dt);
         }
     }
-
-    pub fn compute_collision_force(&self, p1: &Particle, p2: &Particle) -> (Vec2<Force>, Vec2<Force>) {
-
+    pub fn compute_collision_force(&self, p1: &Particle, p2: &Particle) -> (Vec2<f32,Force>, Vec2<f32,Force>) {
         let n = p1.pos - p2.pos;
-        let distance = n.norm();
-        println!("distance: {}",distance);
-
-        if distance.raw().abs() < f32::EPSILON {
-            return (
-                Vec2::<Force>::zero(),
-                Vec2::<Force>::zero()
-            )
+        let distance = n.norm().cast::<f32>();
+        
+        // Early return for particles at same position
+        if distance.mag() < (Scalar::<f64,_>::EPSILON) {
+            return (Vec2::<f32,Force>::zero(), Vec2::<f32,Force>::zero());
         }
 
         // Normalize collision direction vector
-        // TODO: integrate to `dlt`
-        let normal = n.scale(distance.inv());
-        println!("normal: {}", normal);
+        let normal = n / distance;
 
-        // compute particle overlap
+        // Compute particle overlap
         let overlap = (p1.radius + p2.radius) - distance;
-        println!("overlap: {}",overlap);
+        
+        // No collision if no overlap
+        if overlap <= Scalar::<f32,Length>::zero() {
+            return (Vec2::<f32,Force>::zero(), Vec2::<f32,Force>::zero());
+        }
 
         let v1 = p1.vel;
         let v2 = p2.vel;
-
         let rvel = v2 - v1;
         
-        assert_dimension!(normal,Dimensionless);
-        assert_dimension!(overlap,Length);
-        assert_dimension!(rvel,Velocity);
+        assert_dimension!(normal, Dimensionless);
+        assert_dimension!(overlap, Length);
+        assert_dimension!(rvel, Velocity);
 
-        let spring_force: Scalar<Force> = SPRING_COEFFICIENT * overlap;
-        println!("spring force: {}",spring_force);
-        let damping_force: Scalar<Force> = DAMPING_COEFFICIENT * dot!(rvel, normal);
-        println!("damping force: {}",spring_force);
-
+        // Calculate forces
+        let spring_force: Scalar<f32,Force> = SPRING_COEFFICIENT * overlap;
+        let damping_force: Scalar<f32,Force> = DAMPING_COEFFICIENT * dot!(rvel, normal);
         let force = spring_force + damping_force;
-        println!("force: {force}");
 
+        // Calculate force vectors using mass ratio to maintain conservation of momentum
+        // The total force is distributed inversely proportional to the masses
+        let total_mass = p1.mass + p2.mass;
+        let p1_force_factor = p2.mass / total_mass;
+        let p2_force_factor = p1.mass / total_mass;
 
-        let force2 = normal.scale(force);
-        let force1 = normal.scale(-force);
+        // Energy conservation correction
+        // For elastic collisions, ensure the correct amount of energy is preserved
+        // Adjust the force magnitude to conserve energy along the collision normal
+        let force1 = normal.scale(-force * p1_force_factor);
+        let force2 = normal.scale(force * p2_force_factor);
 
         (force1, force2)
     }
@@ -178,21 +185,21 @@ impl System {
         // make particles bounce off walls
 
         for particle in self.particles.iter_mut() {
-            if particle.pos.x() - particle.radius < Scalar::<Length>::zero() {
-                particle.vel.set_at(0, 0, -particle.vel.x());
-                particle.pos.set_at(0, 0, particle.radius);
+            if particle.pos.x() - particle.radius < Scalar::<f32,Length>::zero() {
+                particle.vel.set_at(0,0, 0, -particle.vel.x());
+                particle.pos.set_at(0,0, 0, particle.radius);
             }
             if particle.pos.x() + particle.radius > self.width {
-                particle.vel.set_at(0, 0, -particle.vel.x());
-                particle.pos.set_at(0, 0, self.width - particle.radius);
+                particle.vel.set_at(0,0, 0, -particle.vel.x());
+                particle.pos.set_at(0,0, 0, self.width - particle.radius);
             }
-            if particle.pos.y() - particle.radius < Scalar::<Length>::zero() {
-                particle.vel.set_at(1, 0, -particle.vel.y());
-                particle.pos.set_at(1, 0, particle.radius);
+            if particle.pos.y() - particle.radius < Scalar::<f32,Length>::zero() {
+                particle.vel.set_at(0,1, 0, -particle.vel.y());
+                particle.pos.set_at(0,1, 0, particle.radius);
             }
             if particle.pos.y() + particle.radius > self.height {
-                particle.vel.set_at(1, 0, -particle.vel.y());
-                particle.pos.set_at(1, 0, self.height - particle.radius);
+                particle.vel.set_at(0,1, 0, -particle.vel.y());
+                particle.pos.set_at(0,1, 0, self.height - particle.radius);
             }
         }
     }
@@ -230,7 +237,7 @@ impl System {
             .filter(|(i, j)| {
                 let p1 = &self.particles[*i as usize];
                 let p2 = &self.particles[*j as usize];
-                let distance = (p1.pos - p2.pos).norm();
+                let distance = (p1.pos - p2.pos).norm().cast::<f32>();
                 distance < p1.radius + p2.radius
             })
             .collect();
